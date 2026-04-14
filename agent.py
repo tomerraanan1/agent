@@ -39,7 +39,6 @@ Available tools:
 - `add`, `multiply`: Arithmetic on two numbers.
 - `calculate`: Evaluate any mathematical expression (supports +, -, *, /, **, sqrt, log, pi, etc.).
 - `get_word_length`: Count characters in a string.
-- `web_search_preview`: Search the internet for current information.
 
 Always show your work. For complex problems, break them into steps and tackle each one.
 
@@ -92,10 +91,7 @@ def calculate(expression: str) -> str:
 # LangChain tools are executed locally by ToolNode
 langchain_tools = [add, multiply, get_word_length, think, calculate]
 
-# OpenAI built-in tools are executed server-side (no local execution needed)
-openai_tools = [{"type": "web_search_preview"}]
-
-llm = ChatOpenAI(model="gpt-4o-mini").bind_tools(langchain_tools + openai_tools)
+llm = ChatOpenAI(model="gpt-4o-mini").bind_tools(langchain_tools)
 
 MAX_STEPS = 15
 
