@@ -40,7 +40,9 @@ Available tools:
 - `get_word_length`: Count characters in a string.
 - `web_search_preview`: Search the internet for current information.
 
-Always show your work. For complex problems, break them into steps and tackle each one."""
+Always show your work. For complex problems, break them into steps and tackle each one.
+
+At the end of every response, add a short "**Tools used:**" section that lists each tool you called and one sentence explaining why you called it."""
 
 
 # --- Tools ---
