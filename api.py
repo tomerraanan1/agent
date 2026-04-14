@@ -1,6 +1,7 @@
 import json
 import os
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from agent import agent as graph, extract_text
 
@@ -40,7 +41,7 @@ async def chat(req: ChatRequest):
         history = get_history(req.user_id)
         history.append({"role": "user", "content": req.message})
 
-        result = await graph.ainvoke({"messages": history})
+        result = await graph.ainvoke({"messages": history, "steps": 0})
         last = result["messages"][-1]
         text = extract_text(last.content)
 
@@ -51,6 +52,63 @@ async def chat(req: ChatRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/chat/stream")
+async def chat_stream(req: ChatRequest):
+    """
+    Stream agent execution as Server-Sent Events (SSE).
+
+    Each event is a JSON object with a `type` field:
+      {"type": "tool_call",    "tool": "<name>", "input": {...}}
+      {"type": "tool_result",  "tool": "<name>", "output": "..."}
+      {"type": "response",     "content": "..."}
+      {"type": "done",         "response": "..."}
+      {"type": "error",        "detail": "..."}
+    """
+    async def event_stream():
+        history = get_history(req.user_id)
+        history.append({"role": "user", "content": req.message})
+        final_text = ""
+
+        try:
+            async for chunk in graph.astream({"messages": history, "steps": 0}):
+                for node_name, state_update in chunk.items():
+                    messages = state_update.get("messages", [])
+                    if not messages:
+                        continue
+
+                    if node_name == "tools":
+                        # Each message is a tool result
+                        for msg in messages:
+                            tool_name = getattr(msg, "name", "unknown")
+                            content = extract_text(msg.content)
+                            yield f"data: {json.dumps({'type': 'tool_result', 'tool': tool_name, 'output': content})}\n\n"
+
+                    elif node_name == "llm":
+                        last = messages[-1]
+                        tool_calls = getattr(last, "tool_calls", [])
+                        if tool_calls:
+                            for tc in tool_calls:
+                                yield f"data: {json.dumps({'type': 'tool_call', 'tool': tc['name'], 'input': tc['args']})}\n\n"
+                        else:
+                            text = extract_text(last.content)
+                            if text:
+                                final_text = text
+                                yield f"data: {json.dumps({'type': 'response', 'content': text})}\n\n"
+
+            history.append({"role": "assistant", "content": final_text})
+            save_history(req.user_id, history)
+            yield f"data: {json.dumps({'type': 'done', 'response': final_text})}\n\n"
+
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'detail': str(e)})}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.delete("/history/{user_id}")

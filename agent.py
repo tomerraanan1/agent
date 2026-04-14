@@ -1,4 +1,5 @@
 import json
+import math
 import os
 from dotenv import load_dotenv
 load_dotenv()
@@ -6,6 +7,7 @@ load_dotenv()
 from typing import Annotated, Literal
 from typing_extensions import TypedDict
 
+from langchain_core.messages import SystemMessage
 from langchain_openai import ChatOpenAI
 from langchain.tools import tool
 from langgraph.graph import StateGraph, END
@@ -17,7 +19,28 @@ from langgraph.prebuilt import ToolNode
 
 class State(TypedDict):
     messages: Annotated[list, add_messages]
-    validation_error: str | None  # set if validation fails
+    validation_error: str | None
+    steps: int  # number of LLM invocations; enforces MAX_STEPS limit
+
+
+# --- System Prompt ---
+
+SYSTEM_PROMPT = """You are a capable assistant that solves problems through multiple steps.
+
+When tackling a task:
+1. Use the `think` tool to plan your approach and reason through sub-problems before acting.
+2. Call tools as many times as needed — you are not limited to a single action.
+3. Chain results together: use the output of one tool as input to the next.
+4. Only produce a final answer once you have gathered and verified all necessary information.
+
+Available tools:
+- `think`: Record your reasoning or plan (no side effects — use freely to think out loud).
+- `add`, `multiply`: Arithmetic on two numbers.
+- `calculate`: Evaluate any mathematical expression (supports +, -, *, /, **, sqrt, log, pi, etc.).
+- `get_word_length`: Count characters in a string.
+- `web_search_preview`: Search the internet for current information.
+
+Always show your work. For complex problems, break them into steps and tackle each one."""
 
 
 # --- Tools ---
@@ -40,13 +63,38 @@ def get_word_length(word: str) -> int:
     return len(word)
 
 
+@tool
+def think(thought: str) -> str:
+    """Use this tool to reason through a problem step by step.
+    Write your plan, intermediate conclusions, or working notes here.
+    This has no side effects and does not affect the outside world."""
+    return thought
+
+
+@tool
+def calculate(expression: str) -> str:
+    """Evaluate a mathematical expression safely.
+    Supports operators (+, -, *, /, **, //, %) and math functions
+    (sqrt, sin, cos, tan, log, log10, exp, abs, round, pi, e, etc.).
+    Examples: '2 ** 10', 'sqrt(144) + 5 * 3', 'pi * 4 ** 2'"""
+    allowed_names = {k: v for k, v in math.__dict__.items() if not k.startswith("_")}
+    allowed_names.update({"abs": abs, "round": round, "int": int, "float": float})
+    try:
+        result = eval(expression, {"__builtins__": {}}, allowed_names)
+        return str(result)
+    except Exception as e:
+        return f"Error evaluating '{expression}': {e}"
+
+
 # LangChain tools are executed locally by ToolNode
-langchain_tools = [add, multiply, get_word_length]
+langchain_tools = [add, multiply, get_word_length, think, calculate]
 
 # OpenAI built-in tools are executed server-side (no local execution needed)
 openai_tools = [{"type": "web_search_preview"}]
 
 llm = ChatOpenAI(model="gpt-4o-mini").bind_tools(langchain_tools + openai_tools)
+
+MAX_STEPS = 15
 
 
 def extract_text(content) -> str:
@@ -62,12 +110,20 @@ def extract_text(content) -> str:
 
 def call_llm(state: State) -> State:
     """Send messages to the LLM and get a response."""
-    response = llm.invoke(state["messages"])
-    return {"messages": [response]}
+    messages = list(state["messages"])
+    # Prepend system prompt if not already present
+    if not messages or not isinstance(messages[0], SystemMessage):
+        messages = [SystemMessage(content=SYSTEM_PROMPT)] + messages
+    response = llm.invoke(messages)
+    return {"messages": [response], "steps": state.get("steps", 0) + 1}
 
 
 def should_continue(state: State) -> str:
-    """Route to tools if the LLM called one, otherwise validate."""
+    """Route to tools if the LLM made tool calls, otherwise validate.
+    Enforce MAX_STEPS to prevent infinite loops."""
+    if state.get("steps", 0) >= MAX_STEPS:
+        print(f"[Agent] Step limit ({MAX_STEPS}) reached — ending.")
+        return "validate"
     last = state["messages"][-1]
     if hasattr(last, "tool_calls") and last.tool_calls:
         return "tools"
@@ -147,7 +203,7 @@ history = load_history()
 
 def run(prompt: str) -> str:
     history.append({"role": "user", "content": prompt})
-    result = agent.invoke({"messages": history})
+    result = agent.invoke({"messages": history, "steps": 0})
     last = result["messages"][-1]
     text = extract_text(last.content)
     history.append({"role": "assistant", "content": text})
