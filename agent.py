@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import requests
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -39,6 +40,8 @@ Available tools:
 - `add`, `multiply`: Arithmetic on two numbers.
 - `calculate`: Evaluate any mathematical expression (supports +, -, *, /, **, sqrt, log, pi, etc.).
 - `get_word_length`: Count characters in a string.
+- `search_web`: Search the internet and get titles, URLs, and snippets for a query.
+- `fetch_webpage`: Fetch and read the full text content of a URL.
 
 Always show your work. For complex problems, break them into steps and tackle each one.
 
@@ -88,8 +91,45 @@ def calculate(expression: str) -> str:
         return f"Error evaluating '{expression}': {e}"
 
 
+@tool
+def search_web(query: str) -> str:
+    """Search the web for a query and return the top results with titles, URLs, and snippets.
+    Use this to find relevant pages before fetching their full content."""
+    from ddgs import DDGS
+    try:
+        results = DDGS().text(query, max_results=5)
+        if not results:
+            return "No results found."
+        return "\n\n".join(
+            f"Title: {r['title']}\nURL: {r['href']}\nSnippet: {r['body']}"
+            for r in results
+        )
+    except Exception as e:
+        return f"Search failed: {e}"
+
+
+@tool
+def fetch_webpage(url: str) -> str:
+    """Fetch the content of a webpage and return its cleaned text.
+    Use this after search_web to read the full content of a relevant page."""
+    try:
+        from bs4 import BeautifulSoup
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; research-agent/1.0)"}
+        resp = requests.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "lxml")
+        # Remove scripts, styles, and nav noise
+        for tag in soup(["script", "style", "nav", "footer", "header"]):
+            tag.decompose()
+        text = soup.get_text(separator="\n", strip=True)
+        # Trim to avoid token overflow
+        return text[:8000] if len(text) > 8000 else text
+    except Exception as e:
+        return f"Failed to fetch {url}: {e}"
+
+
 # LangChain tools are executed locally by ToolNode
-langchain_tools = [add, multiply, get_word_length, think, calculate]
+langchain_tools = [add, multiply, get_word_length, think, calculate, search_web, fetch_webpage]
 
 llm = ChatOpenAI(model="gpt-4o-mini").bind_tools(langchain_tools)
 
